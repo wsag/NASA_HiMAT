@@ -6,5 +6,6 @@ Note: these tools are under development. They will be submited to NSIDC upon com
 Files included:
 
 1. rasterize_glaciers_direct_all.pl
+
 This script rasterizes a PyGEM-generated glacier area time series. The rasterized time series product allows hydrologic models, land surface models, or other gridded models to represent the fraction of each grid cell covered by glaciers. 
 
