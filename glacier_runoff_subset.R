@@ -24,7 +24,7 @@ glacier_runoff_subset = function(gl.path,     # path to glacier model output
   }
   
   # subset to defined start and end years
-  n = 12*(end.yr - st.yr)
+  n = 12*(end.yr - st.yr + 1)
   layer.1 = min(which(grepl(st.yr, c(names(glacier.runoff)))))
   glacier.runoff.sub = subset(glacier.runoff, layer.1:(layer.1 + n-1))
   
