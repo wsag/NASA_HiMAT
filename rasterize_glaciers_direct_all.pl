@@ -10,7 +10,10 @@
 #
 #	August 2018
 #		Last Modified-
-#	Mar 2019	Added	Time series of glacier area
+#	Mar 2019	Added	Time series of glacier area.
+#	Aug 2019	Added	Automation of init files.
+#	Nov 2019	Added	Area scaling results/log file.
+#	Feb 2020	Change	Time variable format. Now: YYYYMMDD as an integer.
 #
 #######################################################################
 
@@ -51,16 +54,21 @@ set_autopthread_size(1);	# Piddle size lower limit (in Meg) for multi-threading
 ##################     Files and Directories        ###################
 
 my $global_attrib = [
-	['data_version',	'PyGEM data for HiMAT, Version 2 (March 2019)']];
+	['data_version',	'PyGEM data for HiMAT, Version 3 (September 2019)']];
 
-# my @model	= qw(	ERA-Interim);	@rcp = (85);
-my @model	= qw(	CanESM2		CCSM4		CNRM-CM5	CSIRO-Mk3-6-0	GFDL-CM3
-			GFDL-ESM2M	GISS-E2-R	IPSL-CM5A-LR	MPI-ESM-LR	NorESM1-M);
-my @rcp		= (26, 45, 85);
+my @model	= qw(	CCSM4);		my @rcp = (85);
+# my @model	= qw(	ERA-Interim);	my @rcp = (85);
+# my @model	= qw(	NorESM1-M	MPI-ESM-LR	MPI-ESM-MR	HadGEM2-ES	FGOALS-g2
+# 			CNRM-CM5	CanESM2
+# 			NorESM1-ME	MRI-CGCM3	MIROC-ESM	MIROC-ESM-CHEM	MIROC5
+# 			IPSL-CM5A-LR	IPSL-CM5A-MR	GFDL-CM3	GFDL-ESM2M	GFDL-ESM2G
+# 			GISS-E2-R	CSIRO-Mk3-6-0	CESM1-CAM5	CCSM4		bcc-csm1-1);
+# my @rcp		= (26, 45, 60, 85);
+
 my $data_dir	= '/net/nfs/merrimack/raid2/data/glaciers_6.0/';
-my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/nepal_1km_v2.asc';
+# my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/nepal_1km_v2.asc';
 # my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/karsub3.asc';
-# my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/HiMAT_full_210_Subset.asc';
+my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/HiMAT_full_210_Subset.asc';
 
 my $RGI6_area_file	= '/net/nfs/yukon/raid5/data/RGI6/global_rgi6_glaciers_1km.tif';
 
@@ -84,6 +92,7 @@ my $RGI6_areaFr	= read_GDAL($extent,  $meta, 5, $RGI6_area_file, 1,0)->clip(0, 1
 ##################     Rasterize Glacier Data      ####################
 
 printf "\nProcessing extends from %s\n", basename($netwrk_file);
+(my $domain	= basename($netwrk_file)) =~ s/\.\w+$//;
 
 foreach my $model (@model) {
 foreach my $RCP (@rcp) {
@@ -91,19 +100,32 @@ foreach my $RCP (@rcp) {
   print "\nWorking on Model (RCP): $model \($rcp\)\n";
 
 	### Make list of files
+#   opendir DIR,	      $data_dir. 'trishuli_naltar_v3' or die "Cannot open directory $data_dir\trishuli_naltar_v3/";
+#     my @file 	= map $data_dir. "trishuli_naltar_v3/$_", sort grep(m/.+$model\_$rcp.+2017\.nc$/, readdir(DIR));
   opendir DIR,	      $data_dir. $model;
     my @file 	= map $data_dir."$model/$_", sort grep(m/.+$rcp.+\.nc$/, readdir(DIR));
   closedir DIR;
-  next unless @file;
-  ( my $file_out= basename($file[0])) =~ s/^R\d{2}_(.+)\.nc$/$grid_dir\/$1/;
 
-	### Read dates
-  my $t_att_m	= get_NetCDF_attr($file[0],'time','units');	$t_att_m = $1 if $t_att_m =~ m/(\d{4}-\d{2}-\d{2})/;
-  die "Failed to read reference time. Aborting...\n" unless			 $t_att_m =~ m/^\d{4}-\d{2}-\d{2}$/;
-  my $t_ref_m	= julian_day(split m/-/, $t_att_m);
+  next unless @file;
+#   ( my $file_out= basename($file[0])) =~ s/^R\d{6}_(.+)\.nc$/$grid_dir\/$1/;
+#   ( my $file_out= basename($file[0])) =~ s/^R\d{2}_(.+)\.nc$/$grid_dir\/$1/;
+  ( my $file_out= basename($file[0])) =~ s/^R\d{2}--all--(.+)\.nc$/$grid_dir\/$1/;
+
+# 	### Read dates in format:	time:units = "days since 1999-10-01"
+#   my $t_att_m	= get_NetCDF_attr($file[0],'time','units');	$t_att_m = $1 if $t_att_m =~ m/(\d{4}-\d{2}-\d{2})/;
+#   die "Failed to read reference time. Aborting...\n" unless			 $t_att_m =~ m/^\d{4}-\d{2}-\d{2}$/;
+#   my $t_ref_m	= julian_day(split m/-/, $t_att_m);
+#   my $t_ref	= julian_day(1900,1,1);
+#   my $t_year	= pdl(map(julian_day($_, 7, 1)	- $t_ref, get_NetCDF_var($file[0],'year_plus1')	->list));
+#   my $t_month	= pdl(map($_ + 14 + $t_ref_m	- $t_ref, get_NetCDF_var($file[0],'time')	->list));
+#   my @year	=					  get_NetCDF_var($file[0],'year_plus1')	->list;
+
+	### Read dates in format:	YYYYMMDD as an integer
+  my @t_time	= get_time_var($file[0]);	# Forcing the reference date in it to 1900-01-01
+  my $t_ref_m	= julian_day(1900,1,1);
   my $t_ref	= julian_day(1900,1,1);
+  my $t_month	= pdl(map($_ + 14 + $t_ref_m	- $t_ref, @t_time));
   my $t_year	= pdl(map(julian_day($_, 7, 1)	- $t_ref, get_NetCDF_var($file[0],'year_plus1')	->list));
-  my $t_month	= pdl(map($_ + 14 + $t_ref_m	- $t_ref, get_NetCDF_var($file[0],'time')	->list));
   my @year	=					  get_NetCDF_var($file[0],'year_plus1')	->list;
 
 	### Prepare raster variables
@@ -149,14 +171,15 @@ foreach my $RCP (@rcp) {
   }
 	### Convert pixel accumulated glacial area km2 to spatially distributed area fractions
   my $g_area_mask;
-  ($g_data_y{area_frac}, $g_area_mask) = area_frac($g_data_y{area}, $RGI6_areaFr, $cell_area, $$extent{mask}, \@year);
+  ($g_data_y{area_frac}, $g_area_mask) = area_frac($g_data_y{area}, $RGI6_areaFr, $cell_area, $$extent{mask}, \@year,
+						"$grid_dir/$model\_$rcp.area_scl.log");
 
 	### Save grids to NetCDF files
   print "\nSaving output files\n";
-  my $file_out_y	= $file_out . '_y.nc';
-  my $file_out_m	= $file_out . '_m.nc';
-  my $file_out_c	= $file_out . '_c.tif';
-  my $file_out_a	= $file_out . '_a.tif';
+  my $file_out_y	= $file_out . '_y.nc';		unlink $file_out_y;
+  my $file_out_m	= $file_out . '_m.nc';		unlink $file_out_m;
+  my $file_out_c	= $file_out . '_c.tif';		unlink $file_out_c;
+  my $file_out_a	= $file_out . '_a.tif';		unlink $file_out_a;
   my %dataToWrite_y	= (
     'area'	=> [$g_data_y{area},		'Glacier area',		'km2'],
     'area_frac'	=> [$g_data_y{area_frac},	'Glacier area fraction','fraction'],
@@ -175,16 +198,18 @@ foreach my $RCP (@rcp) {
   write_tif($extent,'Int16',$file_out_a, $g_area_mask);
 
 	### Save init files
-  my $iFile_runoff	= $grid_dir . '_init_files/GFDL-CM3_rcp26_c2_HiMAT_glaciers_runoff_m.init';
-  my $iFile_volume	= $grid_dir . '_init_files/GFDL-CM3_rcp26_c2_HiMAT_glaciers_volume_y.init';
-  my $iFile_area	= $grid_dir . '_init_files/GFDL-CM3_rcp26_c2_HiMAT_glaciers_area_y.init';
-  my $init_runoff	= htm_template($iFile_runoff);
-  my $init_volume	= htm_template($iFile_volume);
-  my $init_area		= htm_template($iFile_area);
-  map s/GFDL-CM3_rcp26/$model\_$rcp/g, $iFile_runoff, $iFile_volume, $iFile_area, $init_runoff, $init_volume, $init_area;
+  my $iFile_runoff	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_runoff_m.init";
+  my $iFile_glMelt	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_glIceMelt_m.init";
+  my $iFile_volume	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_volume_y.init";
+  my $iFile_areaFr	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_area_y.init";
+  my $init_runoff	= init_runoff($file_out_m, $model, $rcp, $domain, $t_month, $t_ref);
+  my $init_glMelt	= init_glMelt($file_out_m, $model, $rcp, $domain, $t_month, $t_ref);
+  my $init_volume	= init_volume($file_out_y, $model, $rcp, $domain, $t_year,  $t_ref);
+  my $init_areaFr	= init_areaFr($file_out_y, $model, $rcp, $domain, $t_year,  $t_ref);
   save_init($iFile_runoff, $init_runoff);
+  save_init($iFile_glMelt, $init_glMelt);
   save_init($iFile_volume, $init_volume);
-  save_init($iFile_area,   $init_area);
+  save_init($iFile_areaFr, $init_areaFr);
 
   push @time, time();
   print  "$rcp is done!\n";
@@ -207,7 +232,7 @@ exit;
 
 sub area_frac
 {
-  my ($data, $area, $cell_area, $network, $year) = @_;
+  my ($data, $area, $cell_area, $network, $year, $log_file) = @_;
   print "\nCalculating area fraction\n";
 
 	### Find location of glacier pixels
@@ -298,13 +323,18 @@ sub area_frac
   }
 
 	## Print scaling results
-  print  "\n\tDone:\n\t\t\t     Percent         Delta      Excess      Area\n";
+  open (FILE,">$log_file") or die "Couldn't open $log_file, $!";
+  print FILE	   "\t\t\t     Percent         Delta      Excess      Area\n";
+  print "\n\tDone:\n\t\t\t     Percent         Delta      Excess      Area\n";
   foreach my $i (0 .. $data->dim(2)-1) {
     my $glc_area	= (	$area_frac(,,($i  ))		* $cell_area)->sum;
     my $prev_area	= (($i?	$area_frac(,,($i-1)) : $area)	* $cell_area)->sum;
-    printf  "\t\tYear $$year[$i] = %7.2f %%  :%8.1f km2 :%6.1f km2 : %.1f km2\n",
-	$glc_area/$prev_area*100, $glc_area - $prev_area, $excessArea[$i], $glc_area;
+    my $str		= sprintf "\t\tYear $$year[$i] = %7.2f %%  :%8.1f km2 :%6.1f km2 : %.1f km2\n",
+			  $glc_area/$prev_area*100, $glc_area - $prev_area, $excessArea[$i], $glc_area;
+    print FILE	$str;
+    print	$str;
   }
+  close FILE;
 
   return $area_frac, $mask;
 }
@@ -370,6 +400,18 @@ sub get_NetCDF_var
 
 #######################################################################
 
+sub get_time_var
+{
+  my $file	= shift;
+  my @data	= get_NetCDF_var($file,'time')->list;
+  my $t_ref	= julian_day(1900,1,1);
+  my @days	= map julian_day(substr($_,0,4), substr($_,4,2), substr($_,6,2)) - $t_ref, @data;
+
+  return @days;
+}
+
+#######################################################################
+
 sub get_NetCDF_textvar
 {
   my ($file,$var_name) = @_;
@@ -401,6 +443,128 @@ sub get_NetCDF_attr
   $ncobj->close();
 
   return $att;
+}
+
+#######################################################################
+
+sub init_runoff
+{
+  my ($file, $model, $rcp, $domain, $time, $t_ref) = @_;
+  my  @date	= $time->list;
+  my  $dateBeg	= sprintf "%04d-%02d-00", (inverse_julian_day($date[ 0] + $t_ref))[0,1];
+  my  $dateEnd	= sprintf "%04d-%02d-00", (inverse_julian_day($date[-1] + $t_ref))[0,1];
+  my  $bands	= scalar   @date;
+
+  my $str = <<EOF;
+{
+  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_runoff_m',
+  Time_Series	=> 'monthly',
+  Start_Date	=> '$dateBeg',
+  End_Date	=> '$dateEnd',
+  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
+  Var_Name	=> 'runoff',
+  Units		=> 'm3/sec',
+  Var_Scale	=> 3.858e-07,
+  Var_Offset	=> 0,
+  Orig_Units	=> 'm3/month',
+  Bands		=> $bands,
+  Processing	=> 'noScale',
+  Projection	=> 'epsg:4326',
+  File_Path	=> '(1e20,1e5):$file;'
+}
+EOF
+
+  return $str;
+}
+
+sub init_glMelt
+{
+  my ($file, $model, $rcp, $domain, $time, $t_ref) = @_;
+  my  @date	= $time->list;
+  my  $dateBeg	= sprintf "%04d-%02d-00", (inverse_julian_day($date[ 0] + $t_ref))[0,1];
+  my  $dateEnd	= sprintf "%04d-%02d-00", (inverse_julian_day($date[-1] + $t_ref))[0,1];
+  my  $bands	= scalar   @date;
+
+  my $str = <<EOF;
+{
+  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_glIceMelt_m',
+  Time_Series	=> 'monthly',
+  Start_Date	=> '$dateBeg',
+  End_Date	=> '$dateEnd',
+  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
+  Var_Name	=> 'melt',
+  Units		=> 'm3/sec',
+  Var_Scale	=> 3.858e-07,
+  Var_Offset	=> 0,
+  Orig_Units	=> 'm3/month',
+  Bands		=> $bands,
+  Processing	=> 'noScale',
+  Projection	=> 'epsg:4326',
+  File_Path	=> '(1e20,1e5):$file;'
+}
+EOF
+
+  return $str;
+}
+
+sub init_volume
+{
+  my ($file, $model, $rcp, $domain, $time, $t_ref) = @_;
+  my  @date	= $time->list;
+  my  $dateBeg	= sprintf "%04d-00-00", (inverse_julian_day($date[ 0] + $t_ref))[0];
+  my  $dateEnd	= sprintf "%04d-00-00", (inverse_julian_day($date[-1] + $t_ref))[0];
+  my  $bands	= scalar   @date;
+
+  my $str = <<EOF;
+{
+  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_volume_y',
+  Time_Series	=> 'yearly',
+  Start_Date	=> '$dateBeg',
+  End_Date	=> '$dateEnd',
+  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Volume rasterized to $domain grid (UAF-Rounce v.3), yearly',
+  Var_Name	=> 'volume',
+  Units		=> 'm3',
+  Var_Scale	=> 1e9,
+  Var_Offset	=> 0,
+  Orig_Units	=> 'km3',
+  Bands		=> $bands,
+  Processing	=> 'noScale',
+  Projection	=> 'epsg:4326',
+  File_Path	=> '(1e20,1e5):$file;'
+}
+EOF
+
+  return $str;
+}
+
+sub init_areaFr
+{
+  my ($file, $model, $rcp, $domain, $time, $t_ref) = @_;
+  my  @date	= $time->list;
+  my  $dateBeg	= sprintf "%04d-00-00", (inverse_julian_day($date[ 0] + $t_ref))[0];
+  my  $dateEnd	= sprintf "%04d-00-00", (inverse_julian_day($date[-1] + $t_ref))[0];
+  my  $bands	= scalar   @date;
+
+  my $str = <<EOF;
+{
+  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_area_y',
+  Time_Series	=> 'yearly',
+  Start_Date	=> '$dateBeg',
+  End_Date	=> '$dateEnd',
+  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier area fraction rasterized to $domain grid (UAF-Rounce v.3), yearly',
+  Var_Name	=> 'area_frac',
+  Units		=> 'fraction',
+  Var_Scale	=> 1,
+  Var_Offset	=> 0,
+  Orig_Units	=> 'fraction',
+  Bands		=> $bands,
+  Processing	=> 'noScale',
+  Projection	=> 'epsg:4326',
+  File_Path	=> '(1e20,1e5):$file;'
+}
+EOF
+
+  return $str;
 }
 
 #######################################################################
