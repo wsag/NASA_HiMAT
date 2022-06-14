@@ -14,6 +14,7 @@
 #	Aug 2019	Added	Automation of init files.
 #	Nov 2019	Added	Area scaling results/log file.
 #	Feb 2020	Change	Time variable format. Now: YYYYMMDD as an integer.
+#	Jan 2022	Change	Adopted to a new PyGEM output format. Other changes.
 #
 #######################################################################
 
@@ -21,7 +22,6 @@ use strict;
 use File::Basename;
 use File::Path;
 use Geo::GDAL;
-use Geo::Proj4;
 use Math::Trig qw/pi/;
 use PDL;
 use PDL::Char;
@@ -33,12 +33,8 @@ use Inline qw/Pdlpp/;
 use Fcntl;
 use Time::JulianDay;
 use RIMS;
+use RIMS::WBM;
 
-my ($init_file, $io_file) = map '/net/home/cv/alexp/perl/wbm/wbm_dev/'.$_, qw(wbm_path.init wbm_io.pl);
-{			### wbm_io.pl must be in the same directory
-  local @ARGV = ($init_file);
-  require $io_file;
-}
 my @time = (time());
 
 use vars qw(*NEWERR *OLDERR);	# To avoid silly warning messages from GDAL, such as
@@ -54,27 +50,37 @@ set_autopthread_size(1);	# Piddle size lower limit (in Meg) for multi-threading
 ##################     Files and Directories        ###################
 
 my $global_attrib = [
-	['data_version',	'PyGEM data for HiMAT, Version 3 (September 2019)']];
+	['data_version',	'PyGEM data for PyGEM, Version 3 (January 2022)']];
 
-my @model	= qw(	CCSM4);		my @rcp = (85);
-# my @model	= qw(	ERA-Interim);	my @rcp = (85);
-# my @model	= qw(	NorESM1-M	MPI-ESM-LR	MPI-ESM-MR	HadGEM2-ES	FGOALS-g2
-# 			CNRM-CM5	CanESM2
-# 			NorESM1-ME	MRI-CGCM3	MIROC-ESM	MIROC-ESM-CHEM	MIROC5
-# 			IPSL-CM5A-LR	IPSL-CM5A-MR	GFDL-CM3	GFDL-ESM2M	GFDL-ESM2G
-# 			GISS-E2-R	CSIRO-Mk3-6-0	CESM1-CAM5	CCSM4		bcc-csm1-1);
-# my @rcp		= (26, 45, 60, 85);
+my @model	= (
+	'GFDL-ESM4',
+	'CESM2',
+	'MPI-ESM1-2-HR',
+	'EC-Earth3',
+	'NorESM2-MM',
+	'INM-CM5-0',
+	'MRI-ESM2-0',
+	'BCC-CSM2-MR',
+	'FGOALS-f3-L',
+	'CESM2-WACCM',
+	'EC-Earth3-Veg',
+	'INM-CM4-8'
+);
+my @rcp		= qw(ssp126 ssp245 ssp370 ssp585);
+my @RGI6_region	= map sprintf("%02d",$_), 1 .. 18;			# Use only regions needed for the Network grid
+my $suffix	= 'MCMC_ba1_50sets_Global_glaciers';
 
-my $data_dir	= '/net/nfs/merrimack/raid2/data/glaciers_6.0/';
-# my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/nepal_1km_v2.asc';
-# my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/karsub3.asc';
-my $netwrk_file	= '/net/nfs/zero/home/WBM_TrANS/data/HiMAT_full_210_Subset.asc';
+my $data_dir	= '/net/nfs/saco/raid2/data/CMU_Glacier_Model_Output/globalsims_backup/simulations-cmip6/';
+my $dir_out	= '/net/nfs/saco/raid2/data/CMU_Glacier_Model_Output/globalsims_backup/simulations-cmip6/rasterized/';
+my $unzip_dir	= '/data/globalsims_backup/simulations-cmip6/';
+my $netwrk_file	= '/net/nfs/swift/raid2/data/MERIT/MERIT_Hydro_IHU/15min/version_0.2/15min_flwdir_seg_endrh_v2.asc';
 
 my $RGI6_area_file	= '/net/nfs/yukon/raid5/data/RGI6/global_rgi6_glaciers_1km.tif';
 
-(my $grid_dir	= $data_dir . basename($netwrk_file)) =~ s/\.\w+$//;
+(my $grid_dir	= $dir_out . basename($netwrk_file)) =~ s/\.\w+$//;
  my @vars_m	= qw(runoff acc melt refreeze frontalablation massbaltotal prec);
  my @vars_y	= qw(area   volume);
+ my $ref_year	= 2000;			# Reference year in the input data
 
 			### Generic dataset metadata
 my $meta = {'Var_Scale' => 1, 'Var_Offset' => 0, 'Processing' => '', 'Projection' => 'epsg:4326'};
@@ -96,37 +102,30 @@ printf "\nProcessing extends from %s\n", basename($netwrk_file);
 
 foreach my $model (@model) {
 foreach my $RCP (@rcp) {
-  my $rcp =  $model eq 'ERA-Interim' ? '' : 'rcp'.$RCP;
+  my $rcp =  $model eq 'ERA-Interim' ? '' : $RCP;
   print "\nWorking on Model (RCP): $model \($rcp\)\n";
 
+	### Unzipping (modified script from Stanley Glidden
+  unzip_data($data_dir, $unzip_dir, $model, $rcp, \@RGI6_region);
+
 	### Make list of files
-#   opendir DIR,	      $data_dir. 'trishuli_naltar_v3' or die "Cannot open directory $data_dir\trishuli_naltar_v3/";
-#     my @file 	= map $data_dir. "trishuli_naltar_v3/$_", sort grep(m/.+$model\_$rcp.+2017\.nc$/, readdir(DIR));
-  opendir DIR,	      $data_dir. $model;
-    my @file 	= map $data_dir."$model/$_", sort grep(m/.+$rcp.+\.nc$/, readdir(DIR));
-  closedir DIR;
-
+  my @file;
+  foreach my $region (@RGI6_region) {
+    my $dir_in	= "$unzip_dir/_unzipped/$model/$rcp/$region";
+    opendir DIR,  $dir_in;
+      push @file, map "$dir_in/$_", sort grep(m/\.nc$/, readdir(DIR));
+    closedir DIR;
+  }
   next unless @file;
-#   ( my $file_out= basename($file[0])) =~ s/^R\d{6}_(.+)\.nc$/$grid_dir\/$1/;
-#   ( my $file_out= basename($file[0])) =~ s/^R\d{2}_(.+)\.nc$/$grid_dir\/$1/;
-  ( my $file_out= basename($file[0])) =~ s/^R\d{2}--all--(.+)\.nc$/$grid_dir\/$1/;
+ (my $file_out	= basename($file[0])) =~ s/.+($model.+)_all\.nc$/$grid_dir\/$model\/$rcp\/$1/;
+  my $percent	= $#file/100;
 
-# 	### Read dates in format:	time:units = "days since 1999-10-01"
-#   my $t_att_m	= get_NetCDF_attr($file[0],'time','units');	$t_att_m = $1 if $t_att_m =~ m/(\d{4}-\d{2}-\d{2})/;
-#   die "Failed to read reference time. Aborting...\n" unless			 $t_att_m =~ m/^\d{4}-\d{2}-\d{2}$/;
-#   my $t_ref_m	= julian_day(split m/-/, $t_att_m);
-#   my $t_ref	= julian_day(1900,1,1);
-#   my $t_year	= pdl(map(julian_day($_, 7, 1)	- $t_ref, get_NetCDF_var($file[0],'year_plus1')	->list));
-#   my $t_month	= pdl(map($_ + 14 + $t_ref_m	- $t_ref, get_NetCDF_var($file[0],'time')	->list));
-#   my @year	=					  get_NetCDF_var($file[0],'year_plus1')	->list;
-
-	### Read dates in format:	YYYYMMDD as an integer
-  my @t_time	= get_time_var($file[0]);	# Forcing the reference date in it to 1900-01-01
-  my $t_ref_m	= julian_day(1900,1,1);
+	### Read dates
+  my @t_time	= get_time_var($file[0], $ref_year);	# Julian Day
   my $t_ref	= julian_day(1900,1,1);
-  my $t_month	= pdl(map($_ + 14 + $t_ref_m	- $t_ref, @t_time));
-  my $t_year	= pdl(map(julian_day($_, 7, 1)	- $t_ref, get_NetCDF_var($file[0],'year_plus1')	->list));
-  my @year	=					  get_NetCDF_var($file[0],'year_plus1')	->list;
+  my $t_month	= pdl(map($_ + 14		- $t_ref, @t_time));
+  my $t_year	= pdl(map(julian_day($_, 7, 1)	- $t_ref, get_NetCDF_var($file[0],'year')->list));
+  my @year	=					  get_NetCDF_var($file[0],'year')->list;
 
 	### Prepare raster variables
   my %g_data_y	= map(($_ => zeroes($$extent{ncols}, $$extent{nrows}, $t_year ->dim(0))->copybad($$extent{mask})), @vars_y);
@@ -134,41 +133,32 @@ foreach my $RCP (@rcp) {
      $g_data_m{NN}	  =  zeroes($$extent{ncols}, $$extent{nrows})		       ->copybad($$extent{mask});
 
 	### Read data
-  foreach my $data_file (@file) {
-    printf "\nProcessing file- %s\n", $data_file;
-    print  "\tReading data\n";
+  for (my $i=0; $i <= $#file; $i++) {
+    # printf("\r\tRasterizing %d of %d", $i+1, scalar(@file));
+    printf("\r\tRasterizing %d %%", 100*$i/$#file) unless $i % $percent;
     my (%p_data_y, %p_data_m);
 
-	### Read metadata
-    my $gl_table	= get_NetCDF_var(    $data_file,'glacier_table');
-    my @header		= get_NetCDF_textvar($data_file,'glac_attrs');
-    my %hdr		= map(($header[$_] => $_), 0 .. $#header);
-    my $coordCol	= pdl($hdr{CenLon}, $hdr{CenLat});	# X for (Lon, Lat) in the $gl_table
-    my $percent		= $gl_table->dim(1)/100;
+	### Read file data
+    my $ncobj		= PDL::NetCDF->new ($file[$i], {MODE => O_RDONLY});
+      my  $CenLon	= $ncobj->get('CenLon')->at(0);
+      my  $CenLat	= $ncobj->get('CenLat')->at(0);
+      map $p_data_m{$_}	= $ncobj->get('glac_'.$_.'_monthly'), @vars_m;
+      map $p_data_y{$_}	= $ncobj->get('glac_'.$_.'_annual' ), @vars_y;
+    $ncobj->close();
 
-	### Read annual point data
-    map $p_data_y{$_} = get_NetCDF_var($data_file, $_.'_glac_annual' )->((0),,), @vars_y;
-
-	### Read monthly point data
-    foreach my $var (@vars_m) {
-	  $p_data_m{$var}         = get_NetCDF_var($data_file, $var.'_glac_monthly')->((0),,);	next if $var eq 'runoff';
-	### Convert units from m to m3/month and use hydrological year shift as 3 below
-      map $p_data_m{$var}->($_,) *= $p_data_y{area}->(int(($_+3)/12),) * 1e6, 0 .. $p_data_m{$var}->dim(0)-1;
-    }
 	### Rasterize
-    for (my $i=0; $i < $gl_table->dim(1); $i++) {
-      printf("\r\tRasterizing %d %%", 100*$i/$gl_table->dim(1)) unless $i % $percent;
-
-      my @colRow	= map int,Geo::GDAL::ApplyGeoTransform($$extent{igTransform},$gl_table($coordCol,$i)->list);
+    my @colRow		= map int,Geo::GDAL::ApplyGeoTransform($$extent{igTransform},$CenLon,$CenLat);
 		# Skip pixels outside the network domain
-      next if $colRow[0] < 0 || $colRow[1] < 0 || $colRow[0] >= $$extent{ncols} || $colRow[1] >= $$extent{nrows};
+    next if $colRow[0] < 0 || $colRow[1] < 0 || $colRow[0] >= $$extent{ncols} || $colRow[1] >= $$extent{nrows};
 		# Accumulate point data to the raster grids
-      map $g_data_y{$_}->(@colRow,)->flat += $p_data_y{$_}->(,$i)->flat, @vars_y;
-      map $g_data_m{$_}->(@colRow,)->flat += $p_data_m{$_}->(,$i)->flat, @vars_m;
-	  $g_data_m{NN}->(@colRow )       += 1;					# Glacier count in each pixel
-    }
-    print "\r\tRasterizing 100 %\n";
+    map $g_data_y{$_}->(@colRow,)->flat += $p_data_y{$_}->flat, @vars_y;
+    map $g_data_m{$_}->(@colRow,)->flat += $p_data_m{$_}->flat, @vars_m;
+	$g_data_m{NN}->(@colRow )       += 1;					# Glacier count in each pixel
   }
+  $g_data_y{area}	*= 1e-6;				# Convert units to km2
+  $g_data_y{volume}	*= 1e-9;				# Convert units to km3
+  print "\r\tRasterizing 100 %                    \n";		# Use spaces to clear CR
+
 	### Convert pixel accumulated glacial area km2 to spatially distributed area fractions
   my $g_area_mask;
   ($g_data_y{area_frac}, $g_area_mask) = area_frac($g_data_y{area}, $RGI6_areaFr, $cell_area, $$extent{mask}, \@year,
@@ -198,10 +188,10 @@ foreach my $RCP (@rcp) {
   write_tif($extent,'Int16',$file_out_a, $g_area_mask);
 
 	### Save init files
-  my $iFile_runoff	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_runoff_m.init";
-  my $iFile_glMelt	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_glIceMelt_m.init";
-  my $iFile_volume	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_volume_y.init";
-  my $iFile_areaFr	= $grid_dir . "_init_files/$model\_$rcp\_c2_HiMAT_glaciers_area_y.init";
+  my $iFile_runoff	= $grid_dir . "_init_files/$model\_$rcp\_$suffix\_glaciers_runoff_m.init";
+  my $iFile_glMelt	= $grid_dir . "_init_files/$model\_$rcp\_$suffix\_glaciers_glIceMelt_m.init";
+  my $iFile_volume	= $grid_dir . "_init_files/$model\_$rcp\_$suffix\_glaciers_volume_y.init";
+  my $iFile_areaFr	= $grid_dir . "_init_files/$model\_$rcp\_$suffix\_glaciers_area_y.init";
   my $init_runoff	= init_runoff($file_out_m, $model, $rcp, $domain, $t_month, $t_ref);
   my $init_glMelt	= init_glMelt($file_out_m, $model, $rcp, $domain, $t_month, $t_ref);
   my $init_volume	= init_volume($file_out_y, $model, $rcp, $domain, $t_year,  $t_ref);
@@ -210,9 +200,10 @@ foreach my $RCP (@rcp) {
   save_init($iFile_glMelt, $init_glMelt);
   save_init($iFile_volume, $init_volume);
   save_init($iFile_areaFr, $init_areaFr);
+  rmtree("$unzip_dir/_unzipped/$model");			# Remove the unzipped source files
 
   push @time, time();
-  print  "$rcp is done!\n";
+  print  "$model\_$rcp is done!\n";
   printf "\nTime used - %d hours, %d minutes, and %d seconds\n", time_used($time[-2],$time[-1]);
 
   last unless $rcp;
@@ -220,15 +211,16 @@ foreach my $RCP (@rcp) {
 
 #######################################################################
 						# Report Total Time
-printf "\nTime used - %d hours, %d minutes, and %d seconds\n",
+if ($#model + $#rcp) {
+  printf "\nTotal time used - %d hours, %d minutes, and %d seconds\n",
 	time_used($time[0],time());
-print "\n\nAll Done!\n\n";
-
+  print "\n\nAll Done!\n\n";
+}
 close NEWERR;	close OLDERR;
 exit;
 
 #######################################################################
-######################  Functions  ###################################get_NetCDF_var#
+######################  Functions  ####################################
 
 sub area_frac
 {
@@ -323,6 +315,7 @@ sub area_frac
   }
 
 	## Print scaling results
+  prepare_dir($log_file);
   open (FILE,">$log_file") or die "Couldn't open $log_file, $!";
   print FILE	   "\t\t\t     Percent         Delta      Excess      Area\n";
   print "\n\tDone:\n\t\t\t     Percent         Delta      Excess      Area\n";
@@ -384,6 +377,27 @@ sub grow_basin
 
   return $mask+$add, \@point, $fail;
 }
+#######################################################################
+
+sub unzip_data
+{
+  my ($base, $base2, $GCM, $ssp, $regions) = @_;
+  my  $inpathfile = $base . join('_', $GCM, $ssp) . '_stats.zip';
+
+  foreach my $region (@$regions) {
+    printf "\r\tUnzipping region $region of %d", scalar(@$regions);
+    my $inpath     = $base   .  '_zipped/' . "$region/stats/";
+    my $outpath    = $base2  .'_unzipped/' . "$GCM/$ssp/$region/";
+    my $inpathfile = $inpath . join('_', $GCM, $ssp) . '_stats.zip';
+	# Check/make output directory
+    next if -d $outpath;
+    mkpath($outpath,0,0775) or die "Cannot make directory...\n$outpath\n";
+	# Unzip and change permissions
+    system "unzip -qq -d $outpath $inpathfile";
+    system "find $outpath -type d | xargs chmod 775";
+    system "find $outpath -type f | xargs chmod 664";
+  } print "\n";
+}
 
 #######################################################################
 
@@ -402,12 +416,12 @@ sub get_NetCDF_var
 
 sub get_time_var
 {
-  my $file	= shift;
+  my($file, $ref_year)	= @_;
   my @data	= get_NetCDF_var($file,'time')->list;
-  my $t_ref	= julian_day(1900,1,1);
-  my @days	= map julian_day(substr($_,0,4), substr($_,4,2), substr($_,6,2)) - $t_ref, @data;
+  my $t_ref	= julian_day($ref_year,1,1);
+  my @j_date	= map $_ + $t_ref, @data;
 
-  return @days;
+  return @j_date;
 }
 
 #######################################################################
@@ -457,11 +471,11 @@ sub init_runoff
 
   my $str = <<EOF;
 {
-  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_runoff_m',
+  Code_Name	=> '$model\_$rcp\_$suffix\_glaciers_runoff_m',
   Time_Series	=> 'monthly',
   Start_Date	=> '$dateBeg',
   End_Date	=> '$dateEnd',
-  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
+  Name		=> 'PyGEM $model $rcp RGI-5 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
   Var_Name	=> 'runoff',
   Units		=> 'm3/sec',
   Var_Scale	=> 3.858e-07,
@@ -487,11 +501,11 @@ sub init_glMelt
 
   my $str = <<EOF;
 {
-  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_glIceMelt_m',
+  Code_Name	=> '$model\_$rcp\_$suffix\_glaciers_glIceMelt_m',
   Time_Series	=> 'monthly',
   Start_Date	=> '$dateBeg',
   End_Date	=> '$dateEnd',
-  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
+  Name		=> 'PyGEM $model $rcp RGI-5 glacier Runoff rasterized to $domain grid (UAF-Rounce v.3), monthly',
   Var_Name	=> 'melt',
   Units		=> 'm3/sec',
   Var_Scale	=> 3.858e-07,
@@ -517,11 +531,11 @@ sub init_volume
 
   my $str = <<EOF;
 {
-  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_volume_y',
+  Code_Name	=> '$model\_$rcp\_$suffix\_glaciers_volume_y',
   Time_Series	=> 'yearly',
   Start_Date	=> '$dateBeg',
   End_Date	=> '$dateEnd',
-  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier Volume rasterized to $domain grid (UAF-Rounce v.3), yearly',
+  Name		=> 'PyGEM $model $rcp RGI-5 glacier Volume rasterized to $domain grid (UAF-Rounce v.3), yearly',
   Var_Name	=> 'volume',
   Units		=> 'm3',
   Var_Scale	=> 1e9,
@@ -547,11 +561,11 @@ sub init_areaFr
 
   my $str = <<EOF;
 {
-  Code_Name	=> '$model\_$rcp\_c2_HiMAT_glaciers_area_y',
+  Code_Name	=> '$model\_$rcp\_$suffix\_glaciers_area_y',
   Time_Series	=> 'yearly',
   Start_Date	=> '$dateBeg',
   End_Date	=> '$dateEnd',
-  Name		=> 'HiMAT $model $rcp RGI-6.0 glacier area fraction rasterized to $domain grid (UAF-Rounce v.3), yearly',
+  Name		=> 'PyGEM $model $rcp RGI-5 glacier area fraction rasterized to $domain grid (UAF-Rounce v.3), yearly',
   Var_Name	=> 'area_frac',
   Units		=> 'fraction',
   Var_Scale	=> 1,
@@ -572,6 +586,7 @@ EOF
 sub save_init
 {
   my ($file,$str) = @_;
+  prepare_dir($file);
   open (FILE,">$file") or die "Couldn't open $file, $!";
     print FILE $str;
   close FILE;
@@ -637,6 +652,8 @@ pp_def('upstreamMask', HandleBad => 1,
       ind++;
       $mask(n=>NN,m=>MM) = 1;
     }
+	// Free OS memory
+    free(myStack);
 ');
 
 #######################################################################
@@ -676,6 +693,9 @@ pp_def('upstrAccumAll', HandleBad => 1,
 	}
       }
     }
+	// Free OS memory
+    free(myData);
+    free(myStack);
 ');
 
 #######################################################################
